@@ -7,8 +7,10 @@ import json
 import folium
 from datetime import datetime
 from uszipcode import SearchEngine
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
 import requests
+from shapely.ops import nearest_points
+import sys
 
 def get_zipcode_info(zipcode):
     """Get the center coordinates and boundary for a given zipcode"""
@@ -33,19 +35,28 @@ def get_zipcode_boundary(zipcode):
         print(f"Could not find boundary for zipcode {zipcode}")
         return None
     
-    # Create a simple polygon from the bounds
+    # Create a polygon from the bounds
     min_lat, min_lon, max_lat, max_lon = zip_info.bounds
     
-    # Convert boundary coordinates to UTM
-    corners = [
-        transformer.transform(min_lon, min_lat),
-        transformer.transform(min_lon, max_lat),
-        transformer.transform(max_lon, max_lat),
-        transformer.transform(max_lon, min_lat),
-        transformer.transform(min_lon, min_lat)  # Close the polygon
-    ]
+    # Create boundary points with more detail
+    lat_points = np.linspace(min_lat, max_lat, 10)
+    lon_points = np.linspace(min_lon, max_lon, 10)
     
-    boundary = Polygon(corners)
+    boundary_points = []
+    # Create perimeter points
+    for lat in lat_points:
+        boundary_points.append((min_lon, lat))
+    for lon in lon_points:
+        boundary_points.append((lon, max_lat))
+    for lat in reversed(lat_points):
+        boundary_points.append((max_lon, lat))
+    for lon in reversed(lon_points):
+        boundary_points.append((lon, min_lat))
+    
+    # Convert all points to UTM
+    utm_points = [transformer.transform(lon, lat) for lon, lat in boundary_points]
+    
+    boundary = Polygon(utm_points)
     return boundary
 
 def create_map(trajectory_points, zipcode=None):
@@ -129,6 +140,15 @@ async def process_imu_data(acc_x, acc_y, zipcode):
     # Get filtered position
     filtered_x, _, filtered_y, _ = kf.x
     
+    # Check if point is within zipcode boundary
+    boundary = get_zipcode_boundary(zipcode)
+    point_utm = (filtered_x, filtered_y)
+    if boundary and not boundary.contains(Point(point_utm)):
+        print("Warning: Position outside zipcode boundary!")
+        # Optionally adjust position to stay within boundary
+        nearest_point = nearest_points(Point(point_utm), boundary)[1]
+        filtered_x, filtered_y = nearest_point.x, nearest_point.y
+    
     # Store trajectory point
     trajectory.append((filtered_x, filtered_y))
     
@@ -137,23 +157,49 @@ async def process_imu_data(acc_x, acc_y, zipcode):
     print(f"Estimated Position: Lat={lat:.6f}, Lon={lon:.6f}")
     print(f"UTM Position: X={filtered_x:.2f}, Y={filtered_y:.2f}")
     
+    # Get route matching data from OpenStreetMap
+    if len(trajectory) > 1:
+        try:
+            # Get the last two points for route matching
+            last_point = transformer_back.transform(trajectory[-1][0], trajectory[-1][1])
+            prev_point = transformer_back.transform(trajectory[-2][0], trajectory[-2][1])
+            
+            # Query OpenStreetMap for nearby roads
+            overpass_url = "http://overpass-api.de/api/interpreter"
+            query = f"""
+                [out:json];
+                way["highway"](around:50,{lat},{lon});
+                (._;>;);
+                out body;
+            """
+            response = requests.post(overpass_url, data=query)
+            data = response.json()
+            
+            if 'elements' in data:
+                roads = [elem for elem in data['elements'] if elem.get('type') == 'way']
+                if roads:
+                    nearest_road = min(roads, key=lambda r: 
+                        abs(r.get('lat', lat) - lat) + abs(r.get('lon', lon) - lon))
+                    print(f"Matched to road: {nearest_road.get('tags', {}).get('name', 'unnamed road')}")
+        except Exception as e:
+            print(f"Route matching error: {e}")
+    
     # Update map every 10 points
     if len(trajectory) % 10 == 0:
         create_map(trajectory, zipcode)
 
-async def connect_to_sensor(zipcode):
+async def connect_to_sensor(zipcode, stop_event):
     uri = "ws://10.62.110.115:8080/sensor/connect?type=android.sensor.accelerometer"
     
     async with websockets.connect(uri) as websocket:
         print("Connected to sensor websocket")
         
-        while True:
+        while not stop_event.is_set():
             try:
-                message = await websocket.recv()
+                # Add timeout to websocket.recv()
+                message = await asyncio.wait_for(websocket.recv(), timeout=0.1)
                 data = json.loads(message)
                 
-                # Extract accelerometer data
-                # Check if data contains the actual values we need
                 if isinstance(data, dict) and all(key in data for key in ['x', 'y', 'z']):
                     try:
                         acc_x = float(data['x'])
@@ -161,19 +207,17 @@ async def connect_to_sensor(zipcode):
                         await process_imu_data(acc_x, acc_y, zipcode)
                     except (ValueError, TypeError) as e:
                         print(f"Error parsing accelerometer values: {e}")
-                        print(f"Received data: {data}")
                 else:
                     print(f"Unexpected data format: {data}")
                 
+            except asyncio.TimeoutError:
+                # Timeout is expected, continue checking stop_event
+                continue
             except websockets.exceptions.ConnectionClosed:
                 print("Connection lost. Attempting to reconnect...")
                 break
-            except json.JSONDecodeError as e:
-                print(f"Error decoding JSON: {e}")
-                print(f"Received message: {message}")
             except Exception as e:
                 print(f"Error processing data: {e}")
-                print(f"Received message: {message}")
 
 async def main():
     # Get zipcode from user and initialize coordinates
@@ -214,19 +258,33 @@ async def main():
         print(f"UTM Zone: {utm_zone}")
         print(f"UTM Position: X={initial_x:.2f}, Y={initial_y:.2f}")
         
-        # Main loop
-        while True:
-            try:
-                # Check for 'q' input
-                if input("Press 'q' to quit: ").lower() == 'q':
-                    print("Quitting...")
-                    break
-                await connect_to_sensor(zipcode)
-            except Exception as e:
-                print(f"Connection error: {e}")
-                print("Retrying in 5 seconds...")
-                await asyncio.sleep(5)
-                
+        # Create an event to signal when to stop
+        stop_event = asyncio.Event()
+        
+        async def input_handler():
+            while True:
+                # Use asyncio.to_thread for blocking input operation
+                user_input = await asyncio.to_thread(input, "Press 'q' to quit and show map: ")
+                if user_input.lower() == 'q':
+                    stop_event.set()
+                    return
+        
+        async def sensor_handler():
+            while not stop_event.is_set():
+                try:
+                    await connect_to_sensor(zipcode, stop_event)
+                except Exception as e:
+                    if not stop_event.is_set():
+                        print(f"Sensor connection error: {e}")
+                        await asyncio.sleep(1)
+        
+        print("Press 'q' and Enter to quit and show map")
+        # Run both handlers concurrently
+        await asyncio.gather(
+            input_handler(),
+            sensor_handler(),
+            return_exceptions=True
+        )
     except ValueError as e:
         print(f"Error: {e}")
         return
@@ -251,7 +309,22 @@ zipcode = None
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    finally:
-        # Create final map when program exits
+    except KeyboardInterrupt:
+        print("\nCtrl+C detected. Creating final map...")
+        # Ensure there's an event loop for the final map creation
         if trajectory:
-            create_map(trajectory, zipcode)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                create_map(trajectory, zipcode)
+            finally:
+                loop.close()
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        # Only try to create map if not already created by KeyboardInterrupt handler
+        if trajectory and not isinstance(sys.exc_info()[1], KeyboardInterrupt):
+            try:
+                create_map(trajectory, zipcode)
+            except Exception as e:
+                print(f"Error creating final map: {e}")
