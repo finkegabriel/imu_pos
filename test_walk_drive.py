@@ -11,53 +11,66 @@ from shapely.geometry import Polygon, Point
 import requests
 from shapely.ops import nearest_points
 import sys
+from contextlib import contextmanager
+
+# Add this function to manage SearchEngine instances
+@contextmanager
+def get_search_engine():
+    search = SearchEngine()
+    try:
+        yield search
+    finally:
+        try:
+            search.close()
+        except:
+            pass
 
 def get_zipcode_info(zipcode):
     """Get the center coordinates and boundary for a given zipcode"""
-    search = SearchEngine()
-    zip_info = search.by_zipcode(zipcode)
-    
-    if not zip_info or not zip_info.lat or not zip_info.lng:
-        raise ValueError(f"Could not find valid coordinates for zipcode {zipcode}")
-    
-    return {
-        'lat': zip_info.lat,
-        'lon': zip_info.lng,
-        'bounds': zip_info.bounds
-    }
+    with get_search_engine() as search:
+        zip_info = search.by_zipcode(zipcode)
+        
+        if not zip_info or not zip_info.lat or not zip_info.lng:
+            raise ValueError(f"Could not find valid coordinates for zipcode {zipcode}")
+        
+        return {
+            'lat': zip_info.lat,
+            'lon': zip_info.lng,
+            'bounds': zip_info.bounds
+        }
 
 def get_zipcode_boundary(zipcode):
     """Get the boundary polygon for a given zipcode"""
-    search = SearchEngine()
-    zip_info = search.by_zipcode(zipcode)
-    
-    if not zip_info.bounds:
-        print(f"Could not find boundary for zipcode {zipcode}")
-        return None
-    
-    # Create a polygon from the bounds
-    min_lat, min_lon, max_lat, max_lon = zip_info.bounds
-    
-    # Create boundary points with more detail
-    lat_points = np.linspace(min_lat, max_lat, 10)
-    lon_points = np.linspace(min_lon, max_lon, 10)
-    
-    boundary_points = []
-    # Create perimeter points
-    for lat in lat_points:
-        boundary_points.append((min_lon, lat))
-    for lon in lon_points:
-        boundary_points.append((lon, max_lat))
-    for lat in reversed(lat_points):
-        boundary_points.append((max_lon, lat))
-    for lon in reversed(lon_points):
-        boundary_points.append((lon, min_lat))
-    
-    # Convert all points to UTM
-    utm_points = [transformer.transform(lon, lat) for lon, lat in boundary_points]
-    
-    boundary = Polygon(utm_points)
-    return boundary
+    with get_search_engine() as search:
+        zip_info = search.by_zipcode(zipcode)
+        
+        if not zip_info.bounds:
+            print(f"Could not find boundary for zipcode {zipcode}")
+            return None
+        
+        # Create a polygon from the bounds
+        min_lat, min_lon, max_lat, max_lon = zip_info.bounds
+        
+        # Create boundary points with more detail
+        lat_points = np.linspace(min_lat, max_lat, 10)
+        lon_points = np.linspace(min_lon, max_lon, 10)
+        
+        boundary_points = []
+        # Create perimeter points
+        for lat in lat_points:
+            boundary_points.append((min_lon, lat))
+        for lon in lon_points:
+            boundary_points.append((lon, max_lat))
+        for lat in reversed(lat_points):
+            boundary_points.append((max_lon, lat))
+        for lon in reversed(lon_points):
+            boundary_points.append((lon, min_lat))
+        
+        # Convert all points to UTM
+        utm_points = [transformer.transform(lon, lat) for lon, lat in boundary_points]
+        
+        boundary = Polygon(utm_points)
+        return boundary
 
 def create_map(trajectory_points, zipcode=None):
     # Create a map centered at the initial position
@@ -113,111 +126,111 @@ def create_map(trajectory_points, zipcode=None):
     print(f"Map saved as {map_file}")
 
 async def process_imu_data(acc_x, acc_y, zipcode):
-    global velocity, position
+    global velocity, position, dt, kf
     
-    # Detect motion type
-    speed = np.linalg.norm(velocity)
-    
-    if speed < 2:  # Walking detection
-        print("Walking detected, applying Zero-Velocity Update")
-        if np.linalg.norm([acc_x, acc_y]) < 0.05:  # Low acceleration -> stationary
-            velocity = np.zeros(2, dtype=np.float64)
-    
-    elif speed > 5:  # Driving detection
-        print("Driving detected, applying road constraints")
-        kf.Q = np.eye(4) * 0.05
-    
-    # Update velocity with explicit float type
-    velocity += np.array([acc_x * dt, acc_y * dt], dtype=np.float64)
-    
-    # Update position
-    position += velocity * dt
-    
-    # Kalman Filter prediction & update
-    kf.predict()
-    kf.update(position)
-    
-    # Get filtered position
-    filtered_x, _, filtered_y, _ = kf.x
-    
-    # Check if point is within zipcode boundary
-    boundary = get_zipcode_boundary(zipcode)
-    point_utm = (filtered_x, filtered_y)
-    if boundary and not boundary.contains(Point(point_utm)):
-        print("Warning: Position outside zipcode boundary!")
-        # Optionally adjust position to stay within boundary
-        nearest_point = nearest_points(Point(point_utm), boundary)[1]
-        filtered_x, filtered_y = nearest_point.x, nearest_point.y
-    
-    # Store trajectory point
-    trajectory.append((filtered_x, filtered_y))
-    
-    # Convert UTM to lat/lon for display
-    lon, lat = transformer_back.transform(filtered_x, filtered_y)
-    print(f"Estimated Position: Lat={lat:.6f}, Lon={lon:.6f}")
-    print(f"UTM Position: X={filtered_x:.2f}, Y={filtered_y:.2f}")
-    
-    # Get route matching data from OpenStreetMap
-    if len(trajectory) > 1:
-        try:
-            # Get the last two points for route matching
-            last_point = transformer_back.transform(trajectory[-1][0], trajectory[-1][1])
-            prev_point = transformer_back.transform(trajectory[-2][0], trajectory[-2][1])
-            
-            # Query OpenStreetMap for nearby roads
-            overpass_url = "http://overpass-api.de/api/interpreter"
-            query = f"""
-                [out:json];
-                way["highway"](around:50,{lat},{lon});
-                (._;>;);
-                out body;
-            """
-            response = requests.post(overpass_url, data=query)
-            data = response.json()
-            
-            if 'elements' in data:
-                roads = [elem for elem in data['elements'] if elem.get('type') == 'way']
-                if roads:
-                    nearest_road = min(roads, key=lambda r: 
-                        abs(r.get('lat', lat) - lat) + abs(r.get('lon', lon) - lon))
-                    print(f"Matched to road: {nearest_road.get('tags', {}).get('name', 'unnamed road')}")
-        except Exception as e:
-            print(f"Route matching error: {e}")
-    
-    # Update map every 10 points
-    if len(trajectory) % 10 == 0:
-        create_map(trajectory, zipcode)
+    try:
+        # Convert inputs to float64 explicitly
+        acc_x = np.float64(acc_x)
+        acc_y = np.float64(acc_y)
+        
+        # Initialize position if None
+        if position is None:
+            position = np.array([initial_x, initial_y], dtype=np.float64)
+        
+        # Ensure position is a numpy array
+        position = np.asarray(position, dtype=np.float64)
+        
+        # Detect motion type
+        speed = np.float64(np.linalg.norm(velocity))
+        
+        if speed < 2:  # Walking detection
+            if np.linalg.norm([acc_x, acc_y]) < 0.05:  # Low acceleration -> stationary
+                velocity = np.zeros(2, dtype=np.float64)
+                print("Stationary")
+            else:
+                print("Walking")
+        
+        elif speed > 5:  # Driving detection
+            print("Driving")
+            kf.Q = np.eye(4) * 0.05
+        
+        # Update velocity and position with explicit float type
+        velocity = velocity + np.array([acc_x * dt, acc_y * dt], dtype=np.float64)
+        position = position + velocity * dt
+        
+        # Kalman Filter prediction & update
+        kf.predict()
+        measurement = np.array([position[0], position[1]], dtype=np.float64)
+        kf.update(measurement)
+        
+        # Get filtered position
+        filtered_state = kf.x.astype(np.float64)
+        filtered_x, _, filtered_y, _ = filtered_state
+        
+        # Store trajectory point
+        trajectory.append((filtered_x, filtered_y))
+        
+        # Convert UTM to lat/lon for display
+        lon, lat = transformer_back.transform(filtered_x, filtered_y)
+        print(f"Position: Lat={lat:.6f}, Lon={lon:.6f}")
+        
+    except Exception as e:
+        print(f"Error in process_imu_data: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def connect_to_sensor(zipcode, stop_event):
     uri = "ws://10.62.110.115:8080/sensor/connect?type=android.sensor.accelerometer"
     
-    async with websockets.connect(uri) as websocket:
-        print("Connected to sensor websocket")
-        
-        while not stop_event.is_set():
-            try:
-                # Add timeout to websocket.recv()
-                message = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-                data = json.loads(message)
+    try:
+        async with websockets.connect(uri) as websocket:
+            print("Connected to sensor websocket")
+            
+            while not stop_event.is_set():
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                    data = json.loads(message)
+                    
+                    if isinstance(data, dict) and 'values' in data and isinstance(data['values'], list):
+                        try:
+                            # Debug prints for raw data
+                            print(f"Raw values types: {[type(v) for v in data['values']]}")
+                            print(f"Raw values: {data['values']}")
+                            
+                            # Convert string values to float if needed
+                            values = []
+                            for v in data['values']:
+                                if isinstance(v, str):
+                                    v = v.strip()  # Remove any whitespace
+                                values.append(float(v))
+                            
+                            acc_x = np.float64(values[0])
+                            acc_y = np.float64(values[1])
+                            
+                            print(f"Converted values - x: {acc_x} ({type(acc_x)}), y: {acc_y} ({type(acc_y)})")
+                            
+                            await process_imu_data(acc_x, acc_y, zipcode)
+                        except (ValueError, TypeError, IndexError) as e:
+                            print(f"Error parsing accelerometer values: {e}")
+                            print(f"Problem value types: {[type(v) for v in data['values']]}")
+                            print(f"Problem values: {data['values']}")
+                    else:
+                        print(f"Unexpected data format: {data}")
                 
-                if isinstance(data, dict) and all(key in data for key in ['x', 'y', 'z']):
-                    try:
-                        acc_x = float(data['x'])
-                        acc_y = float(data['y'])
-                        await process_imu_data(acc_x, acc_y, zipcode)
-                    except (ValueError, TypeError) as e:
-                        print(f"Error parsing accelerometer values: {e}")
-                else:
-                    print(f"Unexpected data format: {data}")
-                
-            except asyncio.TimeoutError:
-                # Timeout is expected, continue checking stop_event
-                continue
-            except websockets.exceptions.ConnectionClosed:
-                print("Connection lost. Attempting to reconnect...")
-                break
-            except Exception as e:
-                print(f"Error processing data: {e}")
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    print("Connection lost. Attempting to reconnect...")
+                    break
+                except Exception as e:
+                    print(f"Error processing data: {e}")
+    except Exception as e:
+        if not stop_event.is_set():
+            print(f"Connection error: {e}")
+    finally:
+        # Ensure websocket is closed properly
+        if 'websocket' in locals() and not websocket.closed:
+            await websocket.close()
 
 async def main():
     # Get zipcode from user and initialize coordinates
@@ -301,30 +314,30 @@ initial_y = None
 transformer = None
 transformer_back = None
 kf = None
-velocity = None
+velocity = np.zeros(2, dtype=np.float64)  # Initialize as numpy array
 position = None
-dt = 1.0
+dt = np.float64(1.0)  # Initialize as numpy float64
 zipcode = None
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
-        print("\nCtrl+C detected. Creating final map...")
-        # Ensure there's an event loop for the final map creation
+        print("\nCtrl+C detected, creating final map...")
         if trajectory:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                create_map(trajectory, zipcode)
-            finally:
-                loop.close()
+            create_map(trajectory, zipcode)
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        # Only try to create map if not already created by KeyboardInterrupt handler
-        if trajectory and not isinstance(sys.exc_info()[1], KeyboardInterrupt):
-            try:
-                create_map(trajectory, zipcode)
-            except Exception as e:
-                print(f"Error creating final map: {e}")
+        try:
+            tasks = asyncio.all_tasks(loop)
+            for task in tasks:
+                task.cancel()
+            
+            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        except:
+            pass
+        finally:
+            loop.close()
