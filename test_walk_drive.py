@@ -33,10 +33,21 @@ def get_zipcode_info(zipcode):
         if not zip_info or not zip_info.lat or not zip_info.lng:
             raise ValueError(f"Could not find valid coordinates for zipcode {zipcode}")
         
+        # Get center coordinates
+        center_lat = float(zip_info.lat)
+        center_lon = float(zip_info.lng)
+        
+        # Create a bounding box around the center
+        offset = 0.01  # roughly 1km
+        min_lat = center_lat - offset
+        max_lat = center_lat + offset
+        min_lon = center_lon - offset
+        max_lon = center_lon + offset
+        
         return {
-            'lat': zip_info.lat,
-            'lon': zip_info.lng,
-            'bounds': zip_info.bounds
+            'lat': center_lat,
+            'lon': center_lon,
+            'bounds': [min_lat, min_lon, max_lat, max_lon]
         }
 
 def get_zipcode_boundary(zipcode):
@@ -240,6 +251,13 @@ def get_start_point(zipcode):
         # Get center coordinates
         center_lat = float(zip_info['lat'])
         center_lon = float(zip_info['lon'])
+        
+        # Get bounds
+        min_lat, min_lon, max_lat, max_lon = zip_info['bounds']
+        
+        # Ensure the center point is within bounds
+        center_lat = max(float(min_lat), min(float(max_lat), center_lat))
+        center_lon = max(float(min_lon), min(float(max_lon), center_lon))
         
         print(f"\nStarting at zipcode center point:")
         print(f"Latitude: {center_lat:.6f}")
