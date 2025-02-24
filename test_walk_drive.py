@@ -232,21 +232,60 @@ async def connect_to_sensor(zipcode, stop_event):
         if 'websocket' in locals() and not websocket.closed:
             await websocket.close()
 
+def get_start_point(zipcode):
+    """Get a starting point within the zipcode boundary"""
+    with get_search_engine() as search:
+        zip_info = search.by_zipcode(zipcode)
+        
+        if not zip_info or not zip_info.lat or not zip_info.lng:
+            raise ValueError(f"Could not find valid coordinates for zipcode {zipcode}")
+        
+        # Get center coordinates
+        center_lat = float(zip_info.lat)
+        center_lon = float(zip_info.lng)
+        
+        # Create a bounding box around the center point
+        offset = 0.01  # roughly 1km
+        min_lat = center_lat - offset
+        max_lat = center_lat + offset
+        min_lon = center_lon - offset
+        max_lon = center_lon + offset
+        
+        print("\nAvailable starting points:")
+        points = [
+            ("Center", (center_lat, center_lon)),
+            ("North", (max_lat, center_lon)),
+            ("South", (min_lat, center_lon)),
+            ("East", (center_lat, max_lon)),
+            ("West", (center_lat, min_lon))
+        ]
+        
+        for i, (name, coords) in enumerate(points, 1):
+            print(f"{i}. {name} (Lat: {coords[0]:.6f}, Lon: {coords[1]:.6f})")
+        
+        while True:
+            try:
+                choice = int(input("\nSelect starting point (1-5): "))
+                if 1 <= choice <= len(points):
+                    name, (lat, lon) = points[choice - 1]
+                    print(f"\nSelected {name} point: Lat={lat:.6f}, Lon={lon:.6f}")
+                    return lat, lon
+                else:
+                    print("Invalid choice. Please select a number between 1 and 5.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
 async def main():
     # Get zipcode from user and initialize coordinates
     zipcode = input("Enter your zipcode: ")
     try:
-        zip_info = get_zipcode_info(zipcode)
-        
-        # Set up global variables
+        # Get starting point within zipcode
         global initial_lat, initial_lon, initial_x, initial_y, transformer, transformer_back, kf, velocity, position, dt
-        
-        initial_lat = zip_info['lat']
-        initial_lon = zip_info['lon']
+        initial_lat, initial_lon = get_start_point(zipcode)
         
         # UTM Projection Setup
-        wgs84 = pyproj.CRS('EPSG:4326')  # Standard GPS coordinates
-        utm_zone = int((initial_lon + 180) / 6) + 1  # Calculate UTM zone from longitude
+        wgs84 = pyproj.CRS('EPSG:4326')
+        utm_zone = int((initial_lon + 180) / 6) + 1
         utm = pyproj.CRS(f"+proj=utm +zone={utm_zone} +datum=WGS84")
         transformer = pyproj.Transformer.from_crs(wgs84, utm, always_xy=True)
         transformer_back = pyproj.Transformer.from_crs(utm, wgs84, always_xy=True)
