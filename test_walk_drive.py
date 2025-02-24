@@ -233,47 +233,21 @@ async def connect_to_sensor(zipcode, stop_event):
             await websocket.close()
 
 def get_start_point(zipcode):
-    """Get a starting point within the zipcode boundary"""
-    with get_search_engine() as search:
-        zip_info = search.by_zipcode(zipcode)
-        
-        if not zip_info or not zip_info.lat or not zip_info.lng:
-            raise ValueError(f"Could not find valid coordinates for zipcode {zipcode}")
+    """Get the center point of the zipcode"""
+    try:
+        zip_info = get_zipcode_info(zipcode)
         
         # Get center coordinates
-        center_lat = float(zip_info.lat)
-        center_lon = float(zip_info.lng)
+        center_lat = float(zip_info['lat'])
+        center_lon = float(zip_info['lon'])
         
-        # Create a bounding box around the center point
-        offset = 0.01  # roughly 1km
-        min_lat = center_lat - offset
-        max_lat = center_lat + offset
-        min_lon = center_lon - offset
-        max_lon = center_lon + offset
+        print(f"\nStarting at zipcode center point:")
+        print(f"Latitude: {center_lat:.6f}")
+        print(f"Longitude: {center_lon:.6f}")
         
-        print("\nAvailable starting points:")
-        points = [
-            ("Center", (center_lat, center_lon)),
-            ("North", (max_lat, center_lon)),
-            ("South", (min_lat, center_lon)),
-            ("East", (center_lat, max_lon)),
-            ("West", (center_lat, min_lon))
-        ]
-        
-        for i, (name, coords) in enumerate(points, 1):
-            print(f"{i}. {name} (Lat: {coords[0]:.6f}, Lon: {coords[1]:.6f})")
-        
-        while True:
-            try:
-                choice = int(input("\nSelect starting point (1-5): "))
-                if 1 <= choice <= len(points):
-                    name, (lat, lon) = points[choice - 1]
-                    print(f"\nSelected {name} point: Lat={lat:.6f}, Lon={lon:.6f}")
-                    return lat, lon
-                else:
-                    print("Invalid choice. Please select a number between 1 and 5.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+        return center_lat, center_lon
+    except ValueError as e:
+        raise ValueError(f"Could not get zipcode center point: {e}")
 
 async def main():
     # Get zipcode from user and initialize coordinates
