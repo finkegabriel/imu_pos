@@ -29,4 +29,4 @@ def connect(url):
     ws.run_forever()
  
  
-connect("ws://10.62.110.115:8080/sensor/connect?type=android.sensor.accelerometer") 
+connect("ws://10.141.98.176:8080/sensor/connect?type=android.sensor.accelerometer") 
