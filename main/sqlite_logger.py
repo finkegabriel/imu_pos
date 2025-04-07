@@ -10,33 +10,19 @@ cur = conn.cursor()
 def create_message_handler(path):        
     def message(ws, message):
         sensor_val = []
-        if path not in ["gyro", "accel"]:
-            print("Invalid sensor type. Please use 'gyro' or 'accel'.")
-            return
-        if path == "gyro":
-            print("Connecting to Gyroscope sensor...")
-            values = json.loads(message)['values']
-            x_gyro = values[0]
-            y_gyro = values[1]
-            z_gyro = values[2]
-            sensor_val.append( x_gyro, y_gyro, z_gyro)
-        elif path == "accel":
-            print("Connecting to Accelerometer sensor...")
-            values = json.loads(message)['values']
-            x_axcel = values[0]
-            y_axcel = values[1]
-            z_axcel = values[2]
-            sensor_val.append(x_axcel,y_axcel,z_axcel)
+        print("Connecting to Gyroscope sensor...")
+        values = json.loads(message)['values']
+        x = values[0]
+        y = values[1]
+        z = values[2]
         print("msg ", sensor_val)
-        for l in sensor_val:
-            x, y, z = l
-            print("x = ", x, "y = ", y, "z = ", z)
+        print("x = ", x, "y = ", y, "z = ", z)
         
-            # Insert IMU sample
-        # cur.execute("""
-        #     INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
-        #     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        #     (time.time(), 0.1, 0.0, 9.8, x, y, z))
+        #     Insert IMU sample
+        cur.execute("""
+            INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (time.time(), 0.1, 0.0, 9.8, x, y, z))
 
             # Insert GPS sample
             # cur.execute("""
@@ -63,7 +49,7 @@ def connect(url, path):
                               on_close=on_close)
     ws.run_forever()
 
-connect("ws://10.12.36.194:8098/sensor/connect?type=android.sensor.gyroscope", "gyro")
-connect("ws://10.12.36.194:8098/sensor/connect?type=android.sensor.accelerometer", "accel") 
+connect("ws://192.168.86.32:8098/sensor/connect?type=android.sensor.gyroscope", "gyro")
+# connect("ws://10.12.36.194:8098/sensor/connect?type=android.sensor.accelerometer", "accel") 
 conn.commit()
 conn.close()
