@@ -49,7 +49,7 @@ def connect(url, path):
                               on_close=on_close)
     ws.run_forever()
 
-connect("ws://192.168.86.32:8098/sensor/connect?type=android.sensor.gyroscope", "gyro")
+connect("ws://192.168.8.183:8098/sensor/connect?type=android.sensor.gyroscope", "gyro")
 # connect("ws://10.12.36.194:8098/sensor/connect?type=android.sensor.accelerometer", "accel") 
 conn.commit()
 conn.close()
