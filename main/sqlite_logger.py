@@ -4,6 +4,7 @@ import websocket
 import json
 import threading
 from contextlib import closing
+import gps_nema
 
 host_name = "ws://192.168.8.183:8098"
 
@@ -56,12 +57,23 @@ class DatabaseLogger:
                                 INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
                             """, (time.time(), 0.0, 0.0, 0.0, values[0], values[1], values[2]))
+                            #gps insert into table                        
+                            cur.execute("""
+                                INSERT INTO gps_data (id,timestamp,latitude,longitude,altitude,speed,fix_quality,num_satellites,hdop)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (time.time(),37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
                         
                         elif sensor_type == "accelerometer":
                             cur.execute("""
                                 INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
                             """, (time.time(), values[0], values[1], values[2], 0.0, 0.0, 0.0))
+
+                             #gps insert into table                        
+                            cur.execute("""
+                                INSERT INTO gps_data (timestamp,latitude,longitude,altitude,speed,fix_quality,num_satellites,hdop)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (time.time(),37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
                         
                         conn.commit()
                     except sqlite3.Error as e:
@@ -74,7 +86,7 @@ db_logger = DatabaseLogger()
 def create_message_handler(ws, message):
     sensor = ws.url.split(".")[-1]
     values = json.loads(message)['values']
-    print(f"Received {sensor} data: {values}")
+    print("Received {} data: {}".format(sensor, values))
     db_logger.log_data(sensor, values)
 
 def on_error(ws, error):
@@ -84,10 +96,11 @@ def on_close(ws, close_code, reason):
     print("connection closed : ")
 
 def on_message(ws, message):
-    print(f"[{ws.url}] Received:")
+    print("[{}] Received:".format(ws.url))
     create_message_handler(ws,message)
+
 def on_open(ws):
-    print(f"Connection opened")
+    print("Connection opened")
 
 def create_ws(url):
     ws = websocket.WebSocketApp(
