@@ -52,32 +52,41 @@ class DatabaseLogger:
             with closing(sqlite3.connect(self.db_path)) as conn:
                 with closing(conn.cursor()) as cur:
                     try:
+                        current_time = time.time()
+                        # Get GPS data
+                        gps_data = gps_nema.request_gps()
+                        
                         if sensor_type == "gyroscope":
                             cur.execute("""
                                 INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (time.time(), 0.0, 0.0, 0.0, values[0], values[1], values[2]))
-                            #gps insert into table                        
+                            """, (current_time, 0.0, 0.0, 0.0, values[0], values[1], values[2]))
+                            
+                            # GPS insert with actual data
                             cur.execute("""
-                                INSERT INTO gps_data (id,timestamp,latitude,longitude,altitude,speed,fix_quality,num_satellites,hdop)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (time.time(),37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
+                                INSERT INTO gps_data (timestamp, latitude, longitude, altitude, speed, fix_quality, num_satellites, hdop)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (current_time, gps_data.latitude, gps_data.longitude, gps_data.altitude, 
+                                 gps_data.speed, gps_data.fix_quality, gps_data.num_satellites, gps_data.hdop))
                         
                         elif sensor_type == "accelerometer":
                             cur.execute("""
                                 INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """, (time.time(), values[0], values[1], values[2], 0.0, 0.0, 0.0))
+                            """, (current_time, values[0], values[1], values[2], 0.0, 0.0, 0.0))
 
-                             #gps insert into table                        
+                            # GPS insert with actual data
                             cur.execute("""
-                                INSERT INTO gps_data (timestamp,latitude,longitude,altitude,speed,fix_quality,num_satellites,hdop)
+                                INSERT INTO gps_data (timestamp, latitude, longitude, altitude, speed, fix_quality, num_satellites, hdop)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (time.time(),37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
+                            """, (current_time, gps_data.latitude, gps_data.longitude, gps_data.altitude, 
+                                 gps_data.speed, gps_data.fix_quality, gps_data.num_satellites, gps_data.hdop))
                         
                         conn.commit()
                     except sqlite3.Error as e:
                         print(f"Database error: {e}")
+                    except Exception as e:
+                        print(f"Error getting GPS data: {e}")
 
 # Initialize database and logger
 setup_database()
