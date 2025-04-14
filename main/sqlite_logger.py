@@ -80,8 +80,8 @@ def create_ws(url):
 
 def connect(path):
     threads = []
-    print(path['gyro'])
-    print(path['accel'])
+    # print(path['gyro'])
+    # print(path['accel'])
     thread_gyro = threading.Thread(target=create_ws, args=(path['gyro'],))
     thread_gyro.start()
     thread_accel = threading.Thread(target=create_ws, args=(path['accel'],))
