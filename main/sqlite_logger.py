@@ -3,59 +3,79 @@ import time
 import websocket
 import json
 import threading
-
-conn = sqlite3.connect("./db/sensor_log.db")
-cur = conn.cursor()
+from contextlib import closing
 
 host_name = "ws://192.168.8.183:8098"
 
-# Create a wrapper function to handle the path parameter
-def create_message_handler(ws,message):
-    sensor = ws.url.split(".")[len(ws.url.split("."))-1]
-    if(sensor == "gyroscope"):
-        sensor_val = []
-        print("Connecting to sensor...")
-        values = json.loads(message)['values']
-        x = values[0]
-        y = values[1]
-        z = values[2]
-        print("msg ", sensor_val)
-        print("x = ", x, "y = ", y, "z = ", z)
+# Database setup
+def setup_database():
+    with closing(sqlite3.connect("./db/sensor_log.db")) as conn:
+        with closing(conn.cursor()) as cur:
+            # Create IMU data table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS imu_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    accel_x REAL,
+                    accel_y REAL,
+                    accel_z REAL,
+                    gyro_x REAL,
+                    gyro_y REAL,
+                    gyro_z REAL
+                )
+            """)
             
-        # Insert IMU sample
-        cur.execute("""
-                INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (time.time(), 0.0, 0.0, 0.0, x, y, z))
-        
-        # Insert GPS sample
-        cur.execute("""
-            INSERT INTO gps_data (timestamp, latitude, longitude, altitude, speed, fix_quality, num_satellites, hdop)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (time.time(), 37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
+            # Create GPS data table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS gps_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    latitude REAL,
+                    longitude REAL,
+                    altitude REAL,
+                    speed REAL,
+                    fix_quality INTEGER,
+                    num_satellites INTEGER,
+                    hdop REAL
+                )
+            """)
+            conn.commit()
 
-    if(sensor == "accelerometer"):
-        sensor_val = []
-        print("Connecting to sensor...")
-        values = json.loads(message)['values']
-        x = values[0]
-        y = values[1]
-        z = values[2]
-        print("msg ", sensor_val)
-        print("x = ", x, "y = ", y, "z = ", z)
-            
-        # Insert IMU sample
-        cur.execute("""
-                INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (time.time(), x, y, z,0.0, 0.0, 0.0))
+class DatabaseLogger:
+    def __init__(self, db_path="./db/sensor_log.db"):
+        self.db_path = db_path
+        self.lock = threading.Lock()
         
-        # Insert GPS sample
-        cur.execute("""
-            INSERT INTO gps_data (timestamp, latitude, longitude, altitude, speed, fix_quality, num_satellites, hdop)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (time.time(), 37.4219983, -122.084, 15.0, 1.4, 1, 7, 0.9))
-    
+    def log_data(self, sensor_type, values):
+        with self.lock:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                with closing(conn.cursor()) as cur:
+                    try:
+                        if sensor_type == "gyroscope":
+                            cur.execute("""
+                                INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (time.time(), 0.0, 0.0, 0.0, values[0], values[1], values[2]))
+                        
+                        elif sensor_type == "accelerometer":
+                            cur.execute("""
+                                INSERT INTO imu_data (timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (time.time(), values[0], values[1], values[2], 0.0, 0.0, 0.0))
+                        
+                        conn.commit()
+                    except sqlite3.Error as e:
+                        print(f"Database error: {e}")
+
+# Initialize database and logger
+setup_database()
+db_logger = DatabaseLogger()
+
+def create_message_handler(ws, message):
+    sensor = ws.url.split(".")[-1]
+    values = json.loads(message)['values']
+    print(f"Received {sensor} data: {values}")
+    db_logger.log_data(sensor, values)
 
 def on_error(ws, error):
     print("error occurred ")
@@ -96,5 +116,3 @@ connect({
     "gyro": f"{host_name}/sensor/connect?type=android.sensor.gyroscope",
     "accel": f"{host_name}/sensor/connect?type=android.sensor.accelerometer"
 })
-conn.commit()
-conn.close()
